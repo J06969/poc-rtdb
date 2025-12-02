@@ -12,9 +12,49 @@ export default function CreateRoom({ user, onRoomCreated, onRoomJoined }) {
   const { isConnected, lastPing } = useConnectionStatus();
 
   useEffect(() => {
+    // Track which ghost rooms we've already tried to close (prevent duplicate attempts)
+    const closedGhostRooms = new Set();
+
     // Subscribe to all rooms (both open and closed)
     const unsubscribe = subscribeToAllRooms((rooms) => {
       console.log('🎮 [CreateRoom] Received rooms update:', rooms.length, rooms);
+
+      // Clean up ghost rooms (rooms with 0 online members)
+      // This provides distributed cleanup - anyone viewing the lobby helps clean up!
+      rooms.forEach((room) => {
+        // Skip already closed rooms
+        if (room.isClosed || room.roomStatus === 'closed') return;
+
+        // Skip if we've already tried to close this room
+        if (closedGhostRooms.has(room.roomId)) return;
+
+        const members = room.members || {};
+        const membersList = Object.entries(members);
+        const onlineCount = membersList.filter(([, m]) => m.status === 'online').length;
+        const awayCount = membersList.filter(([, m]) => m.status === 'away').length;
+
+        // If no one is online or away, this is a ghost room - close it
+        if (onlineCount === 0 && awayCount === 0 && membersList.length > 0) {
+          console.log(`🧹 [Lobby Ghost Cleaner] Detected: ${room.roomId} (${membersList.length} members, 0 online, 0 away)`);
+
+          // Mark as being closed to prevent duplicate attempts
+          closedGhostRooms.add(room.roomId);
+
+          // Close the ghost room
+          import('../services/room').then(({ closeRoom }) => {
+            closeRoom(room.roomId, 'Auto-closed: Ghost room detected by lobby viewer')
+              .then(() => {
+                console.log(`✅ [Lobby Ghost Cleaner] Closed ghost room: ${room.roomId}`);
+              })
+              .catch((err) => {
+                console.error(`❌ [Lobby Ghost Cleaner] Failed to close ${room.roomId}:`, err);
+                // Remove from set so we can retry later
+                closedGhostRooms.delete(room.roomId);
+              });
+          });
+        }
+      });
+
       setActiveRooms(rooms);
     }, true); // true = include closed rooms
 
