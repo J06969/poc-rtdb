@@ -65,18 +65,24 @@ export default function RoomView({ roomId, user, onLeave }) {
   useEffect(() => {
     // Subscribe to room updates
     const unsubscribe = subscribeToRoom(roomId, (data) => {
+      // Check if room no longer exists (was deleted)
+      if (!data) {
+        alert('Room is closed. Click back to see all rooms.');
+        onLeave();
+        return;
+      }
+
       setRoomData(data);
 
       // Check if current user is host
-      if (data && data.members && data.members[user.uid]) {
+      if (data.members && data.members[user.uid]) {
         const currentMember = data.members[user.uid];
         setIsHost(currentMember.role === 'host');
       }
 
       // Check if room was closed
-      if (data && (data.roomStatus === 'closed' || data.status === 'closed')) {
-        const reason = data.closeReason || 'This room has been closed.';
-        alert(reason);
+      if (data.roomStatus === 'closed' || data.status === 'closed') {
+        alert('Room is closed. Click back to see all rooms.');
         onLeave();
       }
     });
@@ -131,7 +137,7 @@ export default function RoomView({ roomId, user, onLeave }) {
     setShowAfkModal(false);
     try {
       await closeRoom(roomId);
-      alert('Room closed due to host inactivity.');
+      alert('Room is closed. Click back to see all rooms.');
       onLeave();
     } catch (err) {
       console.error('Error closing room:', err);
