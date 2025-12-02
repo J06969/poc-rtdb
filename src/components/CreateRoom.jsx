@@ -123,6 +123,16 @@ export default function CreateRoom({ user, onRoomCreated, onRoomJoined }) {
             <span className="text-xs text-gray-500 font-normal">Click to join</span>
           </h3>
 
+          {/* Debug display */}
+          <div className="mb-3 p-2 bg-yellow-50 border border-yellow-300 rounded text-xs">
+            <strong>Debug:</strong> activeRooms array length = {activeRooms.length}
+            {activeRooms.length > 0 && (
+              <div className="mt-1">
+                Room IDs: {activeRooms.map(r => r.roomId).join(', ')}
+              </div>
+            )}
+          </div>
+
           {/* Debug info */}
           {console.log('🖼️ [Render] activeRooms.length:', activeRooms.length)}
 
