@@ -80,6 +80,8 @@ export function usePresence(roomId, userId) {
         onDisconnect(userLastChangedRef).set(serverTimestamp());
 
         // CRITICAL: Decrement online count when disconnecting
+        // NOTE: We no longer pre-set room closure here because it causes race conditions
+        // The useDisconnectMonitor hook handles ALL room closures properly
         const decrementRef = ref(db, `rooms/${roomId}/onlineMemberCount`);
         onValue(roomRef, (snap) => {
           const room = snap.val();
@@ -90,36 +92,9 @@ export function usePresence(roomId, userId) {
           // Decrement the counter
           onDisconnect(decrementRef).set(newCount);
 
-          // If this will make count = 0, also close the room
-          if (newCount === 0) {
-            console.log(`[usePresence] User ${userId} is last member. Setting up auto-close on disconnect`);
-
-            const statusRef = ref(db, `rooms/${roomId}/status`);
-            const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
-            const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
-            const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
-            const statsRef = ref(db, `rooms/${roomId}/stats`);
-            const deleteAtRef = ref(db, `rooms/${roomId}/deleteAt`);
-
-            // When this user disconnects, close the room
-            onDisconnect(statusRef).set('closed');
-            onDisconnect(roomStatusRef).set('closed');
-            onDisconnect(closedAtRef).set(serverTimestamp());
-            onDisconnect(closeReasonRef).set('Auto-closed: All members disconnected');
-
-            // Set deletion timestamp
-            const deleteTime = Date.now() + ROOM_MONITOR_CONFIG.DELETE_CLOSED_ROOM_AFTER;
-            onDisconnect(deleteAtRef).set(deleteTime);
-
-            // Update stats to show all offline
-            onDisconnect(statsRef).set({
-              activePlayers: 0,
-              awayPlayers: 0,
-              offlinePlayers: room?.members ? Object.keys(room.members).length : 1,
-              totalPlayers: room?.members ? Object.keys(room.members).length : 1,
-              lastChecked: serverTimestamp()
-            });
-          }
+          // REMOVED: Auto-close logic that was causing premature room closures
+          // Room closure is now ONLY handled by useDisconnectMonitor
+          // This ensures proper checking of ALL members' status before closing
         }, { onlyOnce: true });
 
         // CRITICAL: Set up a trigger to force room status check when THIS user disconnects
