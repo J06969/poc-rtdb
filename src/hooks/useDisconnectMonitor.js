@@ -35,12 +35,28 @@ export function useDisconnectMonitor(roomId) {
       const lastDisconnect = snapshot.val();
       console.log(`[DisconnectMonitor] Disconnect detected in room ${roomId} at ${lastDisconnect}`);
 
-      // Wait a moment for Firebase to update all member statuses
+      // Wait for Firebase to propagate all disconnect handlers and status updates
+      // Increased from 1s to 2s to ensure all clients' status updates have completed
       setTimeout(async () => {
         // Check if all members are offline
         onValue(roomRef, async (roomSnapshot) => {
           const roomData = roomSnapshot.val();
-          if (!roomData || !roomData.members) return;
+
+          // If room doesn't exist or is already closed, skip
+          if (!roomData) {
+            console.log(`[DisconnectMonitor] Room ${roomId} no longer exists, skipping`);
+            return;
+          }
+
+          if (roomData.roomStatus === 'closed' || roomData.status === 'closed') {
+            console.log(`[DisconnectMonitor] Room ${roomId} already closed, skipping`);
+            return;
+          }
+
+          if (!roomData.members) {
+            console.log(`[DisconnectMonitor] Room ${roomId} has no members, skipping`);
+            return;
+          }
 
           const members = roomData.members || {};
           const membersList = Object.entries(members);
@@ -50,16 +66,31 @@ export function useDisconnectMonitor(roomId) {
           const awayCount = membersList.filter(([, m]) => m.status === 'away').length;
           const offlineCount = membersList.filter(([, m]) => m.status === 'offline').length;
 
-          console.log(`[DisconnectMonitor] Room ${roomId} member count:`, {
+          console.log(`[DisconnectMonitor] 🔍 Room ${roomId} status check:`, {
             online: onlineCount,
             away: awayCount,
             offline: offlineCount,
-            total: membersList.length
+            total: membersList.length,
+            memberDetails: membersList.map(([id, data]) => ({
+              id: id.substring(0, 8),
+              name: data.name,
+              status: data.status,
+              role: data.role
+            }))
           });
 
-          // If ALL members are offline, close the room after a short delay
+          // CRITICAL: Room closes ONLY if there are ZERO online players AND ZERO away players
+          // If even ONE player is online or away, the room MUST stay open
+          const hasActivePlayers = onlineCount > 0 || awayCount > 0;
+
+          if (hasActivePlayers) {
+            console.log(`[DisconnectMonitor] ✅ Room ${roomId} has ${onlineCount} online + ${awayCount} away players. Room stays OPEN.`);
+            return; // Exit early - DO NOT close the room
+          }
+
+          // If we get here, ALL members are offline
           if (onlineCount === 0 && awayCount === 0 && offlineCount > 0) {
-            console.log(`[DisconnectMonitor] ALL ${offlineCount} members offline! Room ${roomId} will close in ${ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT / 1000}s`);
+            console.log(`[DisconnectMonitor] ❌ ALL ${offlineCount} members offline! Room ${roomId} will close in ${ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT / 1000}s`);
 
             // Set room to empty status
             const statusRef = ref(db, `rooms/${roomId}/status`);
@@ -80,24 +111,45 @@ export function useDisconnectMonitor(roomId) {
 
             // Close the room after configured timeout (3 seconds)
             setTimeout(async () => {
-              console.log(`[DisconnectMonitor] Auto-closing empty room ${roomId}`);
+              // DOUBLE CHECK: Before closing, verify again that no one is online
+              // This prevents race conditions where someone reconnects during the timeout
+              onValue(roomRef, async (finalCheckSnapshot) => {
+                const finalRoomData = finalCheckSnapshot.val();
 
-              const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
-              const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
-              const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
+                if (!finalRoomData || !finalRoomData.members) {
+                  console.log(`[DisconnectMonitor] Room ${roomId} disappeared before closure`);
+                  return;
+                }
 
-              await set(statusRef, 'closed');
-              await set(roomStatusRef, 'closed');
-              await set(closedAtRef, serverTimestamp());
-              await set(closeReasonRef, 'Auto-closed: All players disconnected');
+                const finalMembers = finalRoomData.members || {};
+                const finalMembersList = Object.entries(finalMembers);
+                const finalOnlineCount = finalMembersList.filter(([, m]) => m.status === 'online').length;
+                const finalAwayCount = finalMembersList.filter(([, m]) => m.status === 'away').length;
 
-              console.log(`[DisconnectMonitor] Room ${roomId} closed successfully`);
+                if (finalOnlineCount > 0 || finalAwayCount > 0) {
+                  console.log(`[DisconnectMonitor] 🛑 ABORT CLOSURE: Room ${roomId} has ${finalOnlineCount} online + ${finalAwayCount} away players. NOT closing!`);
+                  return; // DO NOT close - someone is still there!
+                }
+
+                console.log(`[DisconnectMonitor] ✅ Confirmed: ALL players still offline. Closing room ${roomId}`);
+
+                const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
+                const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
+                const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
+
+                await set(statusRef, 'closed');
+                await set(roomStatusRef, 'closed');
+                await set(closedAtRef, serverTimestamp());
+                await set(closeReasonRef, 'Auto-closed: All players disconnected');
+
+                console.log(`[DisconnectMonitor] Room ${roomId} closed successfully`);
+              }, { onlyOnce: true });
             }, ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT);
           } else {
-            console.log(`[DisconnectMonitor] Room ${roomId} still has active/away members, not closing`);
+            console.log(`[DisconnectMonitor] ⚠️ Unexpected state: Room ${roomId} has no offline players but also no online/away? Total members: ${membersList.length}`);
           }
         }, { onlyOnce: true });
-      }, 1000); // Wait 1 second for all disconnect handlers to complete
+      }, 2000); // Wait 2 seconds for all disconnect handlers to complete
     });
 
     return () => {
