@@ -138,12 +138,13 @@ export async function leaveRoom(roomId, userId) {
 }
 
 /**
- * Get all active rooms
+ * Get all rooms (both open and closed)
  *
  * @param {Function} callback - Callback function to receive rooms data
+ * @param {boolean} includeClosedRooms - Whether to include closed rooms (default: true)
  * @returns {Function} Unsubscribe function
  */
-export function subscribeToAllRooms(callback) {
+export function subscribeToAllRooms(callback, includeClosedRooms = true) {
   const roomsRef = ref(db, 'rooms');
 
   onValue(roomsRef, (snapshot) => {
@@ -152,13 +153,39 @@ export function subscribeToAllRooms(callback) {
 
     if (data) {
       Object.entries(data).forEach(([roomId, roomData]) => {
-        // Only include active rooms
-        if (roomData.roomStatus === 'open' || roomData.status === 'active') {
+        // Include all rooms or filter based on status
+        const isOpen = roomData.roomStatus === 'open' || roomData.status === 'active';
+        const isClosed = roomData.roomStatus === 'closed' || roomData.status === 'closed';
+
+        if (includeClosedRooms) {
+          // Include all rooms
           rooms.push({
             roomId,
-            ...roomData
+            ...roomData,
+            isOpen,
+            isClosed
           });
+        } else {
+          // Only include open rooms
+          if (isOpen && !isClosed) {
+            rooms.push({
+              roomId,
+              ...roomData,
+              isOpen: true,
+              isClosed: false
+            });
+          }
         }
+      });
+
+      // Sort: open rooms first, then by creation time (newest first)
+      rooms.sort((a, b) => {
+        // Open rooms come first
+        if (a.isOpen && !b.isOpen) return -1;
+        if (!a.isOpen && b.isOpen) return 1;
+
+        // Then sort by creation time (newest first)
+        return (b.createdAt || 0) - (a.createdAt || 0);
       });
     }
 
