@@ -166,10 +166,21 @@ Verify that rooms ONLY close when ALL players are offline, not when just one pla
 2. Look for logs showing player counts
 3. Check if `onlineCount` shows 0 when it should show > 0
 
-**Fix Applied:**
-- Added 2-second wait before checking player statuses
+**Fix Applied (Latest - Dec 2025):**
+- **Root Cause:** onDisconnect handlers were set once and never updated
+- **Solution:** Made onDisconnect handlers dynamic:
+  - Continuously monitor room member count
+  - When alone (totalMembers=1): Set auto-close handlers
+  - When others join (totalMembers>1): Cancel auto-close handlers using .cancel()
+  - Proper cleanup to prevent memory leaks
+- Added 2-second wait before checking player statuses (useDisconnectMonitor)
 - Added double-check before room closure
 - Added early return if ANY players are online/away
+
+**Technical Details:**
+- File: `src/hooks/usePresence.js` lines 104-139
+- Uses Firebase onDisconnect().cancel() to remove stale handlers
+- Room subscription updates in real-time as members join/leave
 
 ### Issue: Room doesn't close when ALL players leave
 
