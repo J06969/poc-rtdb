@@ -1,10 +1,21 @@
 import { useEffect } from 'react';
 import { ref, onValue, set, serverTimestamp } from 'firebase/database';
 import { db } from '../config/firebase';
+import { ROOM_MONITOR_CONFIG } from '../config/roomMonitor';
 
 /**
- * Monitors player disconnections and automatically closes room if all players are offline
- * This ensures rooms get closed even when browsers are completely closed
+ * Monitors player disconnections and automatically closes room if ALL players are offline
+ *
+ * CRITICAL BEHAVIOR:
+ * - Room ONLY closes when ALL players are offline (no online, no away)
+ * - If ANY player is online or away, room stays open
+ * - When host leaves but other players exist, host is transferred (via useHostTransfer hook)
+ * - Empty rooms close after 3 seconds (configurable in ROOM_MONITOR_CONFIG)
+ *
+ * This ensures:
+ * 1. Host can leave, transfer role to another player, room continues
+ * 2. Rooms only close when truly abandoned (all offline)
+ * 3. Works even when browsers are completely closed (Firebase disconnect handlers)
  *
  * @param {string} roomId - The room ID to monitor
  */
@@ -46,9 +57,9 @@ export function useDisconnectMonitor(roomId) {
             total: membersList.length
           });
 
-          // If ALL members are offline, close the room immediately
+          // If ALL members are offline, close the room after a short delay
           if (onlineCount === 0 && awayCount === 0 && offlineCount > 0) {
-            console.log(`[DisconnectMonitor] ALL members offline! Closing room ${roomId} NOW`);
+            console.log(`[DisconnectMonitor] ALL ${offlineCount} members offline! Room ${roomId} will close in ${ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT / 1000}s`);
 
             // Set room to empty status
             const statusRef = ref(db, `rooms/${roomId}/status`);
@@ -67,7 +78,7 @@ export function useDisconnectMonitor(roomId) {
               lastChecked: serverTimestamp()
             });
 
-            // Close the room after 5 seconds
+            // Close the room after configured timeout (3 seconds)
             setTimeout(async () => {
               console.log(`[DisconnectMonitor] Auto-closing empty room ${roomId}`);
 
@@ -81,7 +92,7 @@ export function useDisconnectMonitor(roomId) {
               await set(closeReasonRef, 'Auto-closed: All players disconnected');
 
               console.log(`[DisconnectMonitor] Room ${roomId} closed successfully`);
-            }, 5000); // 5 second delay before closing
+            }, ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT);
           } else {
             console.log(`[DisconnectMonitor] Room ${roomId} still has active/away members, not closing`);
           }

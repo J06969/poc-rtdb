@@ -7,6 +7,7 @@ import { useDisconnectMonitor } from '../hooks/useDisconnectMonitor';
 import { useHostTransfer } from '../hooks/useHostTransfer';
 import AfkCheckModal from './AfkCheckModal';
 import { AFK_CONFIG } from '../config/afk';
+import { ROOM_MONITOR_CONFIG } from '../config/roomMonitor';
 
 export default function RoomView({ roomId, user, onLeave }) {
   const [roomData, setRoomData] = useState(null);
@@ -41,10 +42,10 @@ export default function RoomView({ roomId, user, onLeave }) {
       const inactiveSince = roomData.inactiveSince;
       const currentStatus = roomData.status;
 
-      // Different timeouts for empty vs idle
+      // Different timeouts for empty vs idle (from config)
       const AUTO_CLOSE_TIMEOUT = currentStatus === 'empty'
-        ? 5 * 1000  // 5 seconds for empty rooms
-        : 5 * 60 * 1000; // 5 minutes for idle rooms
+        ? ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT  // 3 seconds for empty rooms
+        : ROOM_MONITOR_CONFIG.IDLE_AUTO_CLOSE_TIMEOUT; // 5 minutes for idle rooms
 
       const timeSinceInactive = Date.now() - inactiveSince;
       const remaining = AUTO_CLOSE_TIMEOUT - timeSinceInactive;
