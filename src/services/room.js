@@ -253,12 +253,22 @@ export async function transferHost(roomId, currentHostId) {
 
       // Transfer to away player as last resort
       const [newHostId, newHostData] = awayPlayers[0];
+
+      // Demote old host to player
+      const oldHostRef = ref(db, `rooms/${roomId}/members/${currentHostId}/role`);
+      await set(oldHostRef, 'player');
+
+      // Promote new host
       const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
       await set(newHostRef, 'host');
 
       console.log(`👑 [transferHost] Host transferred to away player: ${newHostData.name} (${newHostId})`);
       return newHostId;
     }
+
+    // Demote old host to player
+    const oldHostRef = ref(db, `rooms/${roomId}/members/${currentHostId}/role`);
+    await set(oldHostRef, 'player');
 
     // Transfer host to first online player
     const [newHostId, newHostData] = eligiblePlayers[0];
