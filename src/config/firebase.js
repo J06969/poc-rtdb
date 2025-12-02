@@ -13,6 +13,15 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
+// Debug: Log environment variables (remove after fixing)
+console.log('🔍 Firebase Config Check:', {
+  hasApiKey: !!firebaseConfig.apiKey,
+  hasAuthDomain: !!firebaseConfig.authDomain,
+  hasDatabase: !!firebaseConfig.databaseURL,
+  apiKeyPrefix: firebaseConfig.apiKey?.substring(0, 10) + '...',
+  mode: import.meta.env.MODE
+});
+
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
