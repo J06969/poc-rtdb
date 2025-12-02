@@ -54,9 +54,30 @@ export function useHostTransfer(roomId, currentUserId) {
         return;
       }
 
-      // Detect host leaving (status changed to offline)
-      if (hostId === previousHostRef.current && hostData.status === 'offline') {
-        console.log('👑 [useHostTransfer] Host went offline:', hostData.name);
+      // Detect host leaving (status changed to offline) OR going away
+      const shouldTransfer =
+        hostId === previousHostRef.current &&
+        (hostData.status === 'offline' || hostData.status === 'away');
+
+      if (shouldTransfer) {
+        // Check if there are online players available (only transfer if someone is actively online)
+        const onlinePlayers = membersList.filter(([userId, memberData]) => {
+          return userId !== hostId && memberData.status === 'online';
+        });
+
+        // Only transfer if:
+        // 1. Host went offline (always transfer), OR
+        // 2. Host went away AND there are online players available
+        const shouldProceedWithTransfer =
+          hostData.status === 'offline' ||
+          (hostData.status === 'away' && onlinePlayers.length > 0);
+
+        if (!shouldProceedWithTransfer) {
+          console.log('👑 [useHostTransfer] Host is away but no online players available, keeping current host');
+          return;
+        }
+
+        console.log(`👑 [useHostTransfer] Host went ${hostData.status}:`, hostData.name);
 
         // Prevent multiple simultaneous transfers
         if (transferInProgressRef.current) {

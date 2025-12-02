@@ -15,11 +15,13 @@ This document explains how host transfer and room closure work together to ensur
 
 ### 2. Host Transfer Priority
 
-When host goes offline, the system searches for a replacement:
+When host goes **offline** or **away**, the system searches for a replacement:
 
-1. **First**: Online players
-2. **Second**: Away players
+1. **First**: Online players (actively viewing the tab)
+2. **Second**: Away players (tab hidden)
 3. **Last**: If no one available, room closes
+
+**NEW:** Host transfer now triggers when host goes **away** (tab hidden) if there are online players available. This ensures there's always an active host managing the room.
 
 ---
 
@@ -44,7 +46,42 @@ Result:
   🎉 Notification shown: "Bob is now the room host"
 ```
 
-### Scenario 2: Host Leaves, Only Away Players
+### Scenario 2: Host Goes Away, Online Player Exists ⭐ NEW
+
+```
+Initial State:
+  Host: Alice 🟢 online
+  Player: Bob 🟢 online
+
+Alice switches to another tab (becomes away):
+  Host: Alice 🟡 away
+  Player: Bob 🟢 online  ← Becomes new host
+
+Result:
+  ✅ Room stays OPEN
+  👑 Bob is now host (still online and active)
+  📢 Notification: "Bob is now the room host"
+  💡 Alice becomes regular player (still away)
+```
+
+### Scenario 3: Host Goes Away, No Online Players
+
+```
+Initial State:
+  Host: Alice 🟢 online
+  Player: Bob 🟡 away (tab hidden)
+
+Alice switches to another tab (becomes away):
+  Host: Alice 🟡 away
+  Player: Bob 🟡 away
+
+Result:
+  ✅ Room stays OPEN
+  👑 Alice remains host (no online players to transfer to)
+  💡 Both players away, but room stays open
+```
+
+### Scenario 4: Host Leaves, Only Away Players
 
 ```
 Initial State:
@@ -60,7 +97,7 @@ Result:
   👑 Bob is now host (even though away)
 ```
 
-### Scenario 3: All Players Offline
+### Scenario 5: All Players Offline
 
 ```
 Initial State:
@@ -84,7 +121,7 @@ Result:
 
 | Component | Purpose |
 |-----------|---------|
-| `useHostTransfer` | Monitors host status, triggers transfer when host goes offline |
+| `useHostTransfer` | Monitors host status, triggers transfer when host goes **offline OR away** (if online players exist) |
 | `useDisconnectMonitor` | Monitors ALL players, closes room only if ALL offline |
 | `transferHost()` | Performs the actual host role transfer in Firebase |
 | `ROOM_MONITOR_CONFIG` | Configuration (3-second timeout for empty rooms) |
@@ -93,20 +130,34 @@ Result:
 
 ```mermaid
 graph TD
-    A[Host Goes Offline] --> B{Other Players Online?}
-    B -->|Yes| C[useHostTransfer: Transfer Host]
-    B -->|No| D{Any Away Players?}
-    D -->|Yes| E[useHostTransfer: Transfer to Away Player]
-    D -->|No| F[useDisconnectMonitor: Close Room in 3s]
-    C --> G[Room Stays Open]
-    E --> G
-    F --> H[Room Closed]
+    A[Host Status Changes] --> B{Host Offline or Away?}
+    B -->|Offline| C{Other Players Online?}
+    B -->|Away| D{Other Players Online?}
+    C -->|Yes| E[Transfer to Online Player]
+    C -->|No| F{Any Away Players?}
+    D -->|Yes| E
+    D -->|No| G[Keep Current Host]
+    F -->|Yes| H[Transfer to Away Player]
+    F -->|No| I[Close Room in 3s]
+    E --> J[Room Stays Open]
+    G --> J
+    H --> J
+    I --> K[Room Closed]
 ```
+
+**Key Logic:**
+- **Host goes AWAY** + online players exist → Transfer to online player
+- **Host goes AWAY** + no online players → Keep current host (room stays open)
+- **Host goes OFFLINE** + any players exist → Transfer to first available (online > away)
+- **Host goes OFFLINE** + no players → Close room
 
 ### Code Coordination
 
 **File: `src/hooks/useHostTransfer.js`**
-- Listens for host going offline
+- Listens for host going **offline OR away**
+- If host goes away AND online players exist → trigger transfer
+- If host goes away AND no online players → keep current host
+- If host goes offline → always trigger transfer (if any players exist)
 - Finds eligible replacement (online > away)
 - Transfers host role in Firebase
 - Shows notification
@@ -193,7 +244,24 @@ Expected:
   ✅ Room deleted after 30 seconds
 ```
 
-### Test 3: Host Leaves, Only Away Players
+### Test 3: Host Goes Away, Online Player Exists ⭐ NEW
+```
+Setup:
+  - Host creates room
+  - Player joins (both online)
+
+Action:
+  - Host switches to another tab (becomes away)
+
+Expected:
+  ✅ Room stays open
+  ✅ Online player becomes host
+  ✅ Notification shown: "Player X is now the room host"
+  ✅ Host becomes regular player (still away)
+  ✅ Console log: "Host went away: [Host name]"
+```
+
+### Test 4: Host Leaves, Only Away Players
 ```
 Setup:
   - Host creates room
@@ -239,8 +307,10 @@ Expected:
 
 ✅ **Room stays open when host leaves IF other players exist**
 ✅ **Host automatically transfers to next online player**
+✅ **NEW: Host transfers when going away (if online players exist)**
 ✅ **Room only closes when ALL players are offline**
 ✅ **Empty rooms close after 3 seconds**
 ✅ **Works even when browsers are completely closed**
+✅ **Always ensures an active (online) host when possible**
 
-This ensures a smooth multiplayer experience where rooms don't close prematurely!
+This ensures a smooth multiplayer experience where rooms don't close prematurely and there's always an active host!
