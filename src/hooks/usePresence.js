@@ -28,6 +28,9 @@ export function usePresence(roomId, userId) {
     const userPingRef = ref(db, `rooms/${roomId}/members/${userId}/lastPing`);
     const userLatencyRef = ref(db, `rooms/${roomId}/members/${userId}/latency`);
 
+    // Track room subscription for cleanup
+    let roomUnsubscribe = null;
+
     // Handle tab visibility changes
     const handleVisibilityChange = () => {
       if (document.hidden) {
@@ -81,41 +84,60 @@ export function usePresence(roomId, userId) {
 
         // CRITICAL: Decrement online count when disconnecting
         const decrementRef = ref(db, `rooms/${roomId}/onlineMemberCount`);
-        onValue(roomRef, (snap) => {
+
+        // References for room closure onDisconnect handlers
+        const statusRef = ref(db, `rooms/${roomId}/status`);
+        const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
+        const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
+        const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
+        const deleteAtRef = ref(db, `rooms/${roomId}/deleteAt`);
+
+        // Always set up the counter decrement
+        onDisconnect(decrementRef).set(0); // Will be updated dynamically below
+
+        // Clean up previous room subscription if it exists (for reconnection scenarios)
+        if (roomUnsubscribe) {
+          roomUnsubscribe();
+        }
+
+        // Subscribe to room changes to dynamically update onDisconnect behavior
+        roomUnsubscribe = onValue(roomRef, (snap) => {
           const room = snap.val();
+          if (!room) return;
+
           const currentCount = room?.onlineMemberCount || 0;
-          const newCount = Math.max(currentCount - 1, 0);
           const totalMembers = room?.members ? Object.keys(room.members).length : 1;
 
-          console.log(`[usePresence] Setting up onDisconnect for ${userId}. Count: ${currentCount} → ${newCount}, Total members: ${totalMembers}`);
+          console.log(`[usePresence] Member count update for ${userId}: Total members = ${totalMembers}`);
 
-          // Decrement the counter
+          // Update the decrement value
+          const newCount = Math.max(currentCount - 1, 0);
           onDisconnect(decrementRef).set(newCount);
 
-          // CRITICAL FIX: If this is the LAST member (total members = 1), set up room closure
-          // This handles the case where everyone leaves and no one is monitoring
+          // CRITICAL: Dynamically set or cancel room closure based on member count
           if (totalMembers === 1) {
-            console.log(`[usePresence] ${userId} is the ONLY member. Setting up auto-close on disconnect`);
+            // You're alone - set up auto-close on disconnect
+            console.log(`[usePresence] ${userId} is ALONE. Setting up auto-close on disconnect`);
 
-            const statusRef = ref(db, `rooms/${roomId}/status`);
-            const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
-            const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
-            const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
-            const deleteAtRef = ref(db, `rooms/${roomId}/deleteAt`);
-
-            // When this last user disconnects, close the room
             onDisconnect(statusRef).set('closed');
             onDisconnect(roomStatusRef).set('closed');
             onDisconnect(closedAtRef).set(serverTimestamp());
             onDisconnect(closeReasonRef).set('Auto-closed: Last member disconnected');
 
-            // Set deletion timestamp
             const deleteTime = Date.now() + ROOM_MONITOR_CONFIG.DELETE_CLOSED_ROOM_AFTER;
             onDisconnect(deleteAtRef).set(deleteTime);
           } else {
-            console.log(`[usePresence] ${userId} is NOT the only member (${totalMembers} total). Will NOT auto-close on disconnect`);
+            // Others are present - CANCEL auto-close handlers
+            console.log(`[usePresence] ${userId} is NOT alone (${totalMembers} total). Canceling auto-close handlers`);
+
+            // Cancel the close handlers - let useDisconnectMonitor handle multi-player scenarios
+            onDisconnect(statusRef).cancel();
+            onDisconnect(roomStatusRef).cancel();
+            onDisconnect(closedAtRef).cancel();
+            onDisconnect(closeReasonRef).cancel();
+            onDisconnect(deleteAtRef).cancel();
           }
-        }, { onlyOnce: true });
+        });
 
         // CRITICAL: Set up a trigger to force room status check when THIS user disconnects
         // This writes to a timestamp that other clients monitor
@@ -152,6 +174,7 @@ export function usePresence(roomId, userId) {
 
     return () => {
       unsubscribe();
+      if (roomUnsubscribe) roomUnsubscribe();
       if (pingInterval) clearInterval(pingInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       // Clean up: set status to offline when component unmounts
