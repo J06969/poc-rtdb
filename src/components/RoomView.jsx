@@ -4,6 +4,7 @@ import { usePresence } from '../hooks/usePresence';
 import { useRoomMonitor } from '../hooks/useRoomMonitor';
 import { useRoomStatusUpdater } from '../hooks/useRoomStatusUpdater';
 import { useDisconnectMonitor } from '../hooks/useDisconnectMonitor';
+import { useHostTransfer } from '../hooks/useHostTransfer';
 import AfkCheckModal from './AfkCheckModal';
 import { AFK_CONFIG } from '../config/afk';
 
@@ -25,6 +26,9 @@ export default function RoomView({ roomId, user, onLeave }) {
   // CRITICAL: Monitor disconnections and auto-close if all players offline
   // This works even when browsers are completely closed!
   useDisconnectMonitor(roomId);
+
+  // Monitor host status and transfer host when host leaves
+  const { newHostName, isHost: isHostFromTransfer } = useHostTransfer(roomId, user.uid);
 
   // Calculate time until auto-close
   useEffect(() => {
@@ -156,6 +160,21 @@ export default function RoomView({ roomId, user, onLeave }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 p-4">
       <div className="max-w-4xl mx-auto">
+        {/* Host Transfer Notification */}
+        {newHostName && (
+          <div className="bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg shadow-xl p-4 mb-4 animate-bounce">
+            <div className="flex items-center gap-3">
+              <div className="text-3xl">👑</div>
+              <div>
+                <div className="font-bold text-lg">New Host Assigned!</div>
+                <div className="text-sm">
+                  <span className="font-semibold">{newHostName}</span> is now the room host
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Auto-close warning banner */}
         {timeUntilAutoClose !== null && (roomData.status === 'empty' || roomData.status === 'idle') && (
           <div className={`${roomData.status === 'empty' ? 'bg-red-600' : 'bg-orange-500'} text-white rounded-lg shadow-xl p-4 mb-4 animate-pulse`}>

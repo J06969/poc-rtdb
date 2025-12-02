@@ -206,6 +206,79 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
 }
 
 /**
+ * Transfer host role to another player
+ * Called when the current host leaves the room
+ *
+ * @param {string} roomId - The room ID
+ * @param {string} currentHostId - The current host's user ID (leaving)
+ * @returns {Promise<string|null>} New host's user ID or null if no one to transfer to
+ */
+export async function transferHost(roomId, currentHostId) {
+  try {
+    console.log(`👑 [transferHost] Starting host transfer for room ${roomId}, current host: ${currentHostId}`);
+
+    const roomRef = ref(db, `rooms/${roomId}`);
+
+    // Get current room data
+    const roomSnapshot = await new Promise((resolve) => {
+      onValue(roomRef, resolve, { onlyOnce: true });
+    });
+
+    const roomData = roomSnapshot.val();
+    if (!roomData) {
+      console.log(`👑 [transferHost] Room ${roomId} not found`);
+      return null;
+    }
+
+    const members = roomData.members || {};
+    const membersList = Object.entries(members);
+
+    // Find online players excluding the current host
+    const eligiblePlayers = membersList.filter(([userId, memberData]) => {
+      return userId !== currentHostId && memberData.status === 'online';
+    });
+
+    console.log(`👑 [transferHost] Eligible players:`, eligiblePlayers.length);
+
+    if (eligiblePlayers.length === 0) {
+      // No one else online - check for away players
+      const awayPlayers = membersList.filter(([userId, memberData]) => {
+        return userId !== currentHostId && memberData.status === 'away';
+      });
+
+      if (awayPlayers.length === 0) {
+        console.log(`👑 [transferHost] No eligible players found. Room will close.`);
+        return null;
+      }
+
+      // Transfer to away player as last resort
+      const [newHostId, newHostData] = awayPlayers[0];
+      const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
+      await set(newHostRef, 'host');
+
+      console.log(`👑 [transferHost] Host transferred to away player: ${newHostData.name} (${newHostId})`);
+      return newHostId;
+    }
+
+    // Transfer host to first online player
+    const [newHostId, newHostData] = eligiblePlayers[0];
+    const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
+    await set(newHostRef, 'host');
+
+    // Update last changed timestamp
+    const lastChangedRef = ref(db, `rooms/${roomId}/members/${newHostId}/lastChanged`);
+    await set(lastChangedRef, serverTimestamp());
+
+    console.log(`👑 [transferHost] Host transferred successfully to: ${newHostData.name} (${newHostId})`);
+    return newHostId;
+
+  } catch (error) {
+    console.error('Error transferring host:', error);
+    throw error;
+  }
+}
+
+/**
  * Close/terminate a room
  *
  * @param {string} roomId - The room ID to close
