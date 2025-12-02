@@ -14,6 +14,7 @@ export default function CreateRoom({ user, onRoomCreated, onRoomJoined }) {
   useEffect(() => {
     // Subscribe to all rooms (both open and closed)
     const unsubscribe = subscribeToAllRooms((rooms) => {
+      console.log('🎮 [CreateRoom] Received rooms update:', rooms.length, rooms);
       setActiveRooms(rooms);
     }, true); // true = include closed rooms
 
@@ -121,6 +122,9 @@ export default function CreateRoom({ user, onRoomCreated, onRoomJoined }) {
             <span>Available Rooms ({activeRooms.length})</span>
             <span className="text-xs text-gray-500 font-normal">Click to join</span>
           </h3>
+
+          {/* Debug info */}
+          {console.log('🖼️ [Render] activeRooms.length:', activeRooms.length)}
 
           {activeRooms.length === 0 ? (
             <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">

@@ -151,11 +151,20 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
     const data = snapshot.val();
     const rooms = [];
 
+    console.log('🔍 [subscribeToAllRooms] Raw data from RTDB:', data);
+
     if (data) {
       Object.entries(data).forEach(([roomId, roomData]) => {
         // Include all rooms or filter based on status
         const isOpen = roomData.roomStatus === 'open' || roomData.status === 'active';
         const isClosed = roomData.roomStatus === 'closed' || roomData.status === 'closed';
+
+        console.log(`🔍 Room ${roomId}:`, {
+          roomStatus: roomData.roomStatus,
+          status: roomData.status,
+          isOpen,
+          isClosed
+        });
 
         if (includeClosedRooms) {
           // Include all rooms
@@ -189,6 +198,7 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
       });
     }
 
+    console.log('🔍 [subscribeToAllRooms] Sending rooms to callback:', rooms.length, rooms);
     callback(rooms);
   });
 
