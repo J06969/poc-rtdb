@@ -80,21 +80,41 @@ export function usePresence(roomId, userId) {
         onDisconnect(userLastChangedRef).set(serverTimestamp());
 
         // CRITICAL: Decrement online count when disconnecting
-        // NOTE: We no longer pre-set room closure here because it causes race conditions
-        // The useDisconnectMonitor hook handles ALL room closures properly
         const decrementRef = ref(db, `rooms/${roomId}/onlineMemberCount`);
         onValue(roomRef, (snap) => {
           const room = snap.val();
-          const newCount = Math.max((room?.onlineMemberCount || 1) - 1, 0);
+          const currentCount = room?.onlineMemberCount || 0;
+          const newCount = Math.max(currentCount - 1, 0);
+          const totalMembers = room?.members ? Object.keys(room.members).length : 1;
 
-          console.log(`[usePresence] Setting up onDisconnect for ${userId}. Will set count to: ${newCount}`);
+          console.log(`[usePresence] Setting up onDisconnect for ${userId}. Count: ${currentCount} → ${newCount}, Total members: ${totalMembers}`);
 
           // Decrement the counter
           onDisconnect(decrementRef).set(newCount);
 
-          // REMOVED: Auto-close logic that was causing premature room closures
-          // Room closure is now ONLY handled by useDisconnectMonitor
-          // This ensures proper checking of ALL members' status before closing
+          // CRITICAL FIX: If this is the LAST member (total members = 1), set up room closure
+          // This handles the case where everyone leaves and no one is monitoring
+          if (totalMembers === 1) {
+            console.log(`[usePresence] ${userId} is the ONLY member. Setting up auto-close on disconnect`);
+
+            const statusRef = ref(db, `rooms/${roomId}/status`);
+            const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
+            const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
+            const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
+            const deleteAtRef = ref(db, `rooms/${roomId}/deleteAt`);
+
+            // When this last user disconnects, close the room
+            onDisconnect(statusRef).set('closed');
+            onDisconnect(roomStatusRef).set('closed');
+            onDisconnect(closedAtRef).set(serverTimestamp());
+            onDisconnect(closeReasonRef).set('Auto-closed: Last member disconnected');
+
+            // Set deletion timestamp
+            const deleteTime = Date.now() + ROOM_MONITOR_CONFIG.DELETE_CLOSED_ROOM_AFTER;
+            onDisconnect(deleteAtRef).set(deleteTime);
+          } else {
+            console.log(`[usePresence] ${userId} is NOT the only member (${totalMembers} total). Will NOT auto-close on disconnect`);
+          }
         }, { onlyOnce: true });
 
         // CRITICAL: Set up a trigger to force room status check when THIS user disconnects
