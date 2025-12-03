@@ -240,7 +240,15 @@ export async function transferHost(roomId, currentHostId) {
 
     console.log(`👑 [transferHost] Eligible players:`, eligiblePlayers.length);
 
-    if (eligiblePlayers.length === 0) {
+    // Determine who should be the new host
+    let newHostId = null;
+    let newHostData = null;
+
+    if (eligiblePlayers.length > 0) {
+      // Transfer to first online player
+      [newHostId, newHostData] = eligiblePlayers[0];
+      console.log(`👑 [transferHost] Transferring to online player: ${newHostData.name} (${newHostId})`);
+    } else {
       // No one else online - check for away players
       const awayPlayers = membersList.filter(([userId, memberData]) => {
         return userId !== currentHostId && memberData.status === 'away';
@@ -252,28 +260,43 @@ export async function transferHost(roomId, currentHostId) {
       }
 
       // Transfer to away player as last resort
-      const [newHostId, newHostData] = awayPlayers[0];
+      [newHostId, newHostData] = awayPlayers[0];
+      console.log(`👑 [transferHost] Transferring to away player: ${newHostData.name} (${newHostId})`);
+    }
 
-      // Demote old host to player
-      const oldHostRef = ref(db, `rooms/${roomId}/members/${currentHostId}/role`);
-      await set(oldHostRef, 'player');
+    // Validate new host before proceeding
+    if (!newHostId || !newHostData) {
+      console.error(`👑 [transferHost] Invalid new host data:`, { newHostId, newHostData });
+      return null;
+    }
 
-      // Promote new host
-      const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
-      await set(newHostRef, 'host');
+    // Re-check room state to prevent race condition where multiple clients transfer simultaneously
+    const verifySnapshot = await new Promise((resolve) => {
+      onValue(roomRef, resolve, { onlyOnce: true });
+    });
+    const verifyRoomData = verifySnapshot.val();
 
-      console.log(`👑 [transferHost] Host transferred to away player: ${newHostData.name} (${newHostId})`);
-      return newHostId;
+    if (!verifyRoomData || !verifyRoomData.members) {
+      console.log(`👑 [transferHost] Room no longer exists, aborting transfer`);
+      return null;
+    }
+
+    // Check if someone else already transferred the host
+    const currentHost = Object.entries(verifyRoomData.members).find(([, m]) => m.role === 'host');
+    if (currentHost && currentHost[0] !== currentHostId) {
+      console.log(`👑 [transferHost] Host already transferred to ${currentHost[1].name}, aborting`);
+      return currentHost[0];
     }
 
     // Demote old host to player
     const oldHostRef = ref(db, `rooms/${roomId}/members/${currentHostId}/role`);
     await set(oldHostRef, 'player');
+    console.log(`👑 [transferHost] Demoted old host ${currentHostId} to player`);
 
-    // Transfer host to first online player
-    const [newHostId, newHostData] = eligiblePlayers[0];
+    // Promote new host
     const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
     await set(newHostRef, 'host');
+    console.log(`👑 [transferHost] Promoted ${newHostId} to host`);
 
     // Update last changed timestamp
     const lastChangedRef = ref(db, `rooms/${roomId}/members/${newHostId}/lastChanged`);
