@@ -1,8 +1,59 @@
-import { ref, set, onValue, off, serverTimestamp } from 'firebase/database';
+import { ref, set, onValue, off, serverTimestamp, update, get } from 'firebase/database';
 import { collection, doc, setDoc, Timestamp } from 'firebase/firestore';
 import { db, firestore } from '../config/firebase';
 import { generateRoomId, generateGameId, getUserDisplayName } from '../utils/roomUtils';
 import { ROOM_MONITOR_CONFIG } from '../config/roomMonitor';
+
+// Constants
+const ROOM_STATUS = {
+  ACTIVE: 'active',
+  IDLE: 'idle',
+  EMPTY: 'empty',
+  CLOSED: 'closed',
+  OPEN: 'open'
+};
+
+const MEMBER_STATUS = {
+  ONLINE: 'online',
+  AWAY: 'away',
+  OFFLINE: 'offline'
+};
+
+const MEMBER_ROLE = {
+  HOST: 'host',
+  PLAYER: 'player',
+  ADMIN: 'admin'
+};
+
+// Helper functions
+const getSnapshot = async (reference) => {
+  return new Promise((resolve) => {
+    onValue(reference, resolve, { onlyOnce: true });
+  });
+};
+
+const batchUpdate = async (updates) => {
+  const promises = Object.entries(updates).map(([path, value]) => {
+    const reference = ref(db, path);
+    return set(reference, value);
+  });
+  return Promise.all(promises);
+};
+
+const createMemberData = (userName, role = MEMBER_ROLE.PLAYER, status = MEMBER_STATUS.ONLINE) => ({
+  name: userName,
+  role,
+  status,
+  lastChanged: serverTimestamp()
+});
+
+const createRoomStats = (activePlayers = 0, awayPlayers = 0, offlinePlayers = 0, totalPlayers = 0) => ({
+  activePlayers,
+  awayPlayers,
+  offlinePlayers,
+  totalPlayers,
+  lastChecked: serverTimestamp()
+});
 
 /**
  * Create a new game room
@@ -22,39 +73,30 @@ export async function createGameRoom(userId) {
     await setDoc(gameStatsRef, {
       created_at: Timestamp.now(),
       initial_score: 0,
-      role: 'admin',
-      roomId: roomId
+      role: MEMBER_ROLE.ADMIN,
+      roomId
     });
 
     // Step 2: Write to RTDB (Hot Data)
     const roomRef = ref(db, `rooms/${roomId}`);
-    await set(roomRef, {
-      gameId: gameId,
-      roomId: roomId,
-      status: 'active',
-      roomStatus: 'open',
+    const roomData = {
+      gameId,
+      roomId,
+      status: ROOM_STATUS.ACTIVE,
+      roomStatus: ROOM_STATUS.OPEN,
       createdAt: serverTimestamp(),
       statusUpdatedAt: serverTimestamp(),
       lastActiveAt: Date.now(),
       inactiveSince: null,
       totalMembers: 1,
       onlineMemberCount: 0, // Will be incremented by usePresence
-      stats: {
-        activePlayers: 1,
-        awayPlayers: 0,
-        offlinePlayers: 0,
-        totalPlayers: 1,
-        lastChecked: serverTimestamp()
-      },
+      stats: createRoomStats(1, 0, 0, 1),
       members: {
-        [userId]: {
-          name: userName,
-          role: 'host',
-          status: 'online',
-          lastChanged: serverTimestamp()
-        }
+        [userId]: createMemberData(userName, MEMBER_ROLE.HOST, MEMBER_STATUS.ONLINE)
       }
-    });
+    };
+
+    await set(roomRef, roomData);
 
     return { roomId, gameId };
   } catch (error) {
@@ -65,6 +107,7 @@ export async function createGameRoom(userId) {
 
 /**
  * Join an existing room
+ * Uses atomic operations to prevent race conditions
  *
  * @param {string} roomId - The room ID to join
  * @param {string} userId - The user ID joining
@@ -73,27 +116,29 @@ export async function createGameRoom(userId) {
 export async function joinRoom(roomId, userId) {
   try {
     const userName = getUserDisplayName(userId);
-    const memberRef = ref(db, `rooms/${roomId}/members/${userId}`);
-
-    await set(memberRef, {
-      name: userName,
-      role: 'player',
-      status: 'online',
-      lastChanged: serverTimestamp()
-    });
-
-    // Increment total members
-    const totalMembersRef = ref(db, `rooms/${roomId}/totalMembers`);
     const roomRef = ref(db, `rooms/${roomId}`);
 
-    // Get current total and increment
-    onValue(roomRef, (snapshot) => {
-      const roomData = snapshot.val();
-      if (roomData) {
-        const currentTotal = roomData.totalMembers || 0;
-        set(totalMembersRef, currentTotal + 1);
-      }
-    }, { onlyOnce: true });
+    // Get current room data atomically
+    const snapshot = await getSnapshot(roomRef);
+    const roomData = snapshot.val();
+
+    if (!roomData) {
+      throw new Error(`Room ${roomId} not found`);
+    }
+
+    // Check if room is closed
+    if (roomData.status === ROOM_STATUS.CLOSED || roomData.roomStatus === ROOM_STATUS.CLOSED) {
+      throw new Error(`Room ${roomId} is closed`);
+    }
+
+    // Prepare batch updates
+    const currentTotal = roomData.totalMembers || 0;
+    const updates = {
+      [`rooms/${roomId}/members/${userId}`]: createMemberData(userName, MEMBER_ROLE.PLAYER, MEMBER_STATUS.ONLINE),
+      [`rooms/${roomId}/totalMembers`]: currentTotal + 1
+    };
+
+    await batchUpdate(updates);
 
   } catch (error) {
     console.error('Error joining room:', error);
@@ -130,7 +175,7 @@ export function subscribeToRoom(roomId, callback) {
 export async function leaveRoom(roomId, userId) {
   try {
     const memberRef = ref(db, `rooms/${roomId}/members/${userId}/status`);
-    await set(memberRef, 'offline');
+    await set(memberRef, MEMBER_STATUS.OFFLINE);
   } catch (error) {
     console.error('Error leaving room:', error);
     throw error;
@@ -155,9 +200,8 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
 
     if (data) {
       Object.entries(data).forEach(([roomId, roomData]) => {
-        // Include all rooms or filter based on status
-        const isOpen = roomData.roomStatus === 'open' || roomData.status === 'active';
-        const isClosed = roomData.roomStatus === 'closed' || roomData.status === 'closed';
+        const isOpen = roomData.roomStatus === ROOM_STATUS.OPEN || roomData.status === ROOM_STATUS.ACTIVE;
+        const isClosed = roomData.roomStatus === ROOM_STATUS.CLOSED || roomData.status === ROOM_STATUS.CLOSED;
 
         console.log(`🔍 Room ${roomId}:`, {
           roomStatus: roomData.roomStatus,
@@ -166,34 +210,23 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
           isClosed
         });
 
-        if (includeClosedRooms) {
-          // Include all rooms
+        const shouldInclude = includeClosedRooms || (isOpen && !isClosed);
+
+        if (shouldInclude) {
           rooms.push({
             roomId,
             ...roomData,
             isOpen,
             isClosed
           });
-        } else {
-          // Only include open rooms
-          if (isOpen && !isClosed) {
-            rooms.push({
-              roomId,
-              ...roomData,
-              isOpen: true,
-              isClosed: false
-            });
-          }
         }
       });
 
       // Sort: open rooms first, then by creation time (newest first)
       rooms.sort((a, b) => {
-        // Open rooms come first
-        if (a.isOpen && !b.isOpen) return -1;
-        if (!a.isOpen && b.isOpen) return 1;
-
-        // Then sort by creation time (newest first)
+        if (a.isOpen !== b.isOpen) {
+          return a.isOpen ? -1 : 1;
+        }
         return (b.createdAt || 0) - (a.createdAt || 0);
       });
     }
@@ -204,6 +237,30 @@ export function subscribeToAllRooms(callback, includeClosedRooms = true) {
 
   return () => off(roomsRef);
 }
+
+/**
+ * Find eligible players for host transfer
+ * Priority: online players > away players
+ *
+ * @param {Array} membersList - Array of [userId, memberData] tuples
+ * @param {string} currentHostId - Current host to exclude
+ * @returns {Array|null} [newHostId, newHostData] or null if no eligible players
+ */
+const findEligibleHost = (membersList, currentHostId) => {
+  const eligiblePlayers = membersList.filter(
+    ([userId, memberData]) => userId !== currentHostId && memberData.status === MEMBER_STATUS.ONLINE
+  );
+
+  if (eligiblePlayers.length > 0) {
+    return eligiblePlayers[0];
+  }
+
+  const awayPlayers = membersList.filter(
+    ([userId, memberData]) => userId !== currentHostId && memberData.status === MEMBER_STATUS.AWAY
+  );
+
+  return awayPlayers.length > 0 ? awayPlayers[0] : null;
+};
 
 /**
  * Transfer host role to another player
@@ -218,13 +275,9 @@ export async function transferHost(roomId, currentHostId) {
     console.log(`👑 [transferHost] Starting host transfer for room ${roomId}, current host: ${currentHostId}`);
 
     const roomRef = ref(db, `rooms/${roomId}`);
-
-    // Get current room data
-    const roomSnapshot = await new Promise((resolve) => {
-      onValue(roomRef, resolve, { onlyOnce: true });
-    });
-
+    const roomSnapshot = await getSnapshot(roomRef);
     const roomData = roomSnapshot.val();
+
     if (!roomData) {
       console.log(`👑 [transferHost] Room ${roomId} not found`);
       return null;
@@ -233,47 +286,25 @@ export async function transferHost(roomId, currentHostId) {
     const members = roomData.members || {};
     const membersList = Object.entries(members);
 
-    // Find online players excluding the current host
-    const eligiblePlayers = membersList.filter(([userId, memberData]) => {
-      return userId !== currentHostId && memberData.status === 'online';
-    });
+    // Find eligible host
+    const eligibleHost = findEligibleHost(membersList, currentHostId);
 
-    console.log(`👑 [transferHost] Eligible players:`, eligiblePlayers.length);
-
-    // Determine who should be the new host
-    let newHostId = null;
-    let newHostData = null;
-
-    if (eligiblePlayers.length > 0) {
-      // Transfer to first online player
-      [newHostId, newHostData] = eligiblePlayers[0];
-      console.log(`👑 [transferHost] Transferring to online player: ${newHostData.name} (${newHostId})`);
-    } else {
-      // No one else online - check for away players
-      const awayPlayers = membersList.filter(([userId, memberData]) => {
-        return userId !== currentHostId && memberData.status === 'away';
-      });
-
-      if (awayPlayers.length === 0) {
-        console.log(`👑 [transferHost] No eligible players found. Room will close.`);
-        return null;
-      }
-
-      // Transfer to away player as last resort
-      [newHostId, newHostData] = awayPlayers[0];
-      console.log(`👑 [transferHost] Transferring to away player: ${newHostData.name} (${newHostId})`);
+    if (!eligibleHost) {
+      console.log(`👑 [transferHost] No eligible players found. Room will close.`);
+      return null;
     }
 
-    // Validate new host before proceeding
+    const [newHostId, newHostData] = eligibleHost;
+    console.log(`👑 [transferHost] Transferring to ${newHostData.status} player: ${newHostData.name} (${newHostId})`);
+
+    // Validate new host
     if (!newHostId || !newHostData) {
       console.error(`👑 [transferHost] Invalid new host data:`, { newHostId, newHostData });
       return null;
     }
 
-    // Re-check room state to prevent race condition where multiple clients transfer simultaneously
-    const verifySnapshot = await new Promise((resolve) => {
-      onValue(roomRef, resolve, { onlyOnce: true });
-    });
+    // Re-check room state to prevent race condition
+    const verifySnapshot = await getSnapshot(roomRef);
     const verifyRoomData = verifySnapshot.val();
 
     if (!verifyRoomData || !verifyRoomData.members) {
@@ -282,25 +313,20 @@ export async function transferHost(roomId, currentHostId) {
     }
 
     // Check if someone else already transferred the host
-    const currentHost = Object.entries(verifyRoomData.members).find(([, m]) => m.role === 'host');
+    const currentHost = Object.entries(verifyRoomData.members).find(([, m]) => m.role === MEMBER_ROLE.HOST);
     if (currentHost && currentHost[0] !== currentHostId) {
       console.log(`👑 [transferHost] Host already transferred to ${currentHost[1].name}, aborting`);
       return currentHost[0];
     }
 
-    // Demote old host to player
-    const oldHostRef = ref(db, `rooms/${roomId}/members/${currentHostId}/role`);
-    await set(oldHostRef, 'player');
-    console.log(`👑 [transferHost] Demoted old host ${currentHostId} to player`);
+    // Batch update: demote old host and promote new host
+    const updates = {
+      [`rooms/${roomId}/members/${currentHostId}/role`]: MEMBER_ROLE.PLAYER,
+      [`rooms/${roomId}/members/${newHostId}/role`]: MEMBER_ROLE.HOST,
+      [`rooms/${roomId}/members/${newHostId}/lastChanged`]: serverTimestamp()
+    };
 
-    // Promote new host
-    const newHostRef = ref(db, `rooms/${roomId}/members/${newHostId}/role`);
-    await set(newHostRef, 'host');
-    console.log(`👑 [transferHost] Promoted ${newHostId} to host`);
-
-    // Update last changed timestamp
-    const lastChangedRef = ref(db, `rooms/${roomId}/members/${newHostId}/lastChanged`);
-    await set(lastChangedRef, serverTimestamp());
+    await batchUpdate(updates);
 
     console.log(`👑 [transferHost] Host transferred successfully to: ${newHostData.name} (${newHostId})`);
     return newHostId;
@@ -313,6 +339,7 @@ export async function transferHost(roomId, currentHostId) {
 
 /**
  * Close/terminate a room
+ * Uses batch operations for efficient database writes
  *
  * @param {string} roomId - The room ID to close
  * @param {string} reason - Reason for closing (optional)
@@ -320,22 +347,20 @@ export async function transferHost(roomId, currentHostId) {
  */
 export async function closeRoom(roomId, reason = 'Room closed by host') {
   try {
-    const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
-    const statusRef = ref(db, `rooms/${roomId}/status`);
-    const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
-    const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
-    const deleteAtRef = ref(db, `rooms/${roomId}/deleteAt`);
-
-    await set(roomStatusRef, 'closed');
-    await set(statusRef, 'closed');
-    await set(closedAtRef, serverTimestamp());
-    await set(closeReasonRef, reason);
-
-    // Schedule deletion
     const deleteTime = Date.now() + ROOM_MONITOR_CONFIG.DELETE_CLOSED_ROOM_AFTER;
-    await set(deleteAtRef, deleteTime);
-
     const deleteInSeconds = Math.round(ROOM_MONITOR_CONFIG.DELETE_CLOSED_ROOM_AFTER / 1000);
+
+    // Batch all updates together
+    const updates = {
+      [`rooms/${roomId}/roomStatus`]: ROOM_STATUS.CLOSED,
+      [`rooms/${roomId}/status`]: ROOM_STATUS.CLOSED,
+      [`rooms/${roomId}/closedAt`]: serverTimestamp(),
+      [`rooms/${roomId}/closeReason`]: reason,
+      [`rooms/${roomId}/deleteAt`]: deleteTime
+    };
+
+    await batchUpdate(updates);
+
     console.log('Room closed:', roomId, 'Reason:', reason, `| Will delete in ${deleteInSeconds}s`);
   } catch (error) {
     console.error('Error closing room:', error);
@@ -344,40 +369,62 @@ export async function closeRoom(roomId, reason = 'Room closed by host') {
 }
 
 /**
+ * Calculate player counts from members
+ *
+ * @param {Object} members - Room members object
+ * @returns {Object} Player counts by status
+ */
+const calculatePlayerCounts = (members = {}) => {
+  const membersList = Object.entries(members);
+
+  return {
+    activePlayers: membersList.filter(([, m]) => m.status === MEMBER_STATUS.ONLINE).length,
+    awayPlayers: membersList.filter(([, m]) => m.status === MEMBER_STATUS.AWAY).length,
+    offlinePlayers: membersList.filter(([, m]) => m.status === MEMBER_STATUS.OFFLINE).length,
+    totalPlayers: membersList.length
+  };
+};
+
+/**
  * Get room status information
  *
  * @param {string} roomId - The room ID
  * @returns {Promise<Object>} Room status information
  */
 export async function getRoomStatus(roomId) {
-  return new Promise((resolve, reject) => {
-    const roomRef = ref(db, `rooms/${roomId}`);
+  const roomRef = ref(db, `rooms/${roomId}`);
+  const snapshot = await getSnapshot(roomRef);
+  const roomData = snapshot.val();
 
-    onValue(roomRef, (snapshot) => {
-      const roomData = snapshot.val();
-      if (roomData) {
-        const members = roomData.members || {};
-        const membersList = Object.entries(members);
+  if (!roomData) {
+    throw new Error('Room not found');
+  }
 
-        const activePlayers = membersList.filter(([, m]) => m.status === 'online').length;
-        const awayPlayers = membersList.filter(([, m]) => m.status === 'away').length;
-        const offlinePlayers = membersList.filter(([, m]) => m.status === 'offline').length;
+  const playerCounts = calculatePlayerCounts(roomData.members);
 
-        resolve({
-          status: roomData.status,
-          roomStatus: roomData.roomStatus,
-          activePlayers,
-          awayPlayers,
-          offlinePlayers,
-          totalPlayers: membersList.length,
-          stats: roomData.stats,
-        });
-      } else {
-        reject(new Error('Room not found'));
-      }
-    }, { onlyOnce: true });
-  });
+  return {
+    status: roomData.status,
+    roomStatus: roomData.roomStatus,
+    ...playerCounts,
+    stats: roomData.stats
+  };
 }
+
+/**
+ * Determine room status based on player activity
+ *
+ * @param {Object} playerCounts - Player counts by status
+ * @returns {string} Room status
+ */
+const determineRoomStatus = ({ activePlayers, awayPlayers, offlinePlayers }) => {
+  if (activePlayers === 0 && awayPlayers === 0 && offlinePlayers > 0) {
+    return ROOM_STATUS.EMPTY;
+  }
+  if (activePlayers === 0 && awayPlayers > 0) {
+    return ROOM_STATUS.IDLE;
+  }
+  return ROOM_STATUS.ACTIVE;
+};
 
 /**
  * Update room status based on player activity
@@ -391,12 +438,10 @@ export async function updateRoomStatus(roomId) {
     console.log(`[updateRoomStatus] ===== Starting update for room ${roomId} =====`);
     const roomRef = ref(db, `rooms/${roomId}`);
 
-    // Get current room data first
-    const roomSnapshot = await new Promise((resolve) => {
-      onValue(roomRef, resolve, { onlyOnce: true });
-    });
-
+    // Get current room data
+    const roomSnapshot = await getSnapshot(roomRef);
     const roomData = roomSnapshot.val();
+
     if (!roomData) {
       throw new Error('Room not found');
     }
@@ -407,31 +452,17 @@ export async function updateRoomStatus(roomId) {
     });
 
     // Don't update if room is already closed
-    if (roomData.status === 'closed' || roomData.roomStatus === 'closed') {
+    if (roomData.status === ROOM_STATUS.CLOSED || roomData.roomStatus === ROOM_STATUS.CLOSED) {
       console.log(`[updateRoomStatus] Room ${roomId} is closed, skipping update`);
       return;
     }
 
+    // Calculate current status
     const status = await getRoomStatus(roomId);
-    console.log(`[updateRoomStatus] Calculated status:`, {
-      activePlayers: status.activePlayers,
-      awayPlayers: status.awayPlayers,
-      offlinePlayers: status.offlinePlayers,
-      totalPlayers: status.totalPlayers
-    });
+    console.log(`[updateRoomStatus] Calculated status:`, status);
 
-    let newStatus = 'active';
-
-    if (status.activePlayers === 0 && status.awayPlayers === 0 && status.offlinePlayers > 0) {
-      newStatus = 'empty';
-      console.log(`[updateRoomStatus] Determined new status: EMPTY (all players offline)`);
-    } else if (status.activePlayers === 0 && status.awayPlayers > 0) {
-      newStatus = 'idle';
-      console.log(`[updateRoomStatus] Determined new status: IDLE (all players away)`);
-    } else if (status.activePlayers > 0) {
-      newStatus = 'active';
-      console.log(`[updateRoomStatus] Determined new status: ACTIVE (${status.activePlayers} players online)`);
-    }
+    const newStatus = determineRoomStatus(status);
+    console.log(`[updateRoomStatus] Determined new status: ${newStatus.toUpperCase()}`);
 
     const currentStatus = roomData.status;
     const currentStats = roomData.stats || {};
@@ -457,47 +488,41 @@ export async function updateRoomStatus(roomId) {
       statsChanged: statsChanged ? `${currentStats.activePlayers}→${status.activePlayers} active` : 'no change'
     });
 
-    // Only update status if it changed
-    if (statusChanged) {
-      const statusRef = ref(db, `rooms/${roomId}/status`);
-      const statusUpdatedRef = ref(db, `rooms/${roomId}/statusUpdatedAt`);
-      await set(statusRef, newStatus);
-      await set(statusUpdatedRef, serverTimestamp());
-    }
+    // Prepare batch updates
+    const updates = {};
 
-    // Only update stats if they changed
-    if (statsChanged) {
-      const statsRef = ref(db, `rooms/${roomId}/stats`);
-      await set(statsRef, {
-        activePlayers: status.activePlayers,
-        awayPlayers: status.awayPlayers,
-        offlinePlayers: status.offlinePlayers,
-        totalPlayers: status.totalPlayers,
-        lastChecked: serverTimestamp()
-      });
-    }
-
-    // Handle inactiveSince timestamp - only when status changes
+    // Update status if changed
     if (statusChanged) {
-      if (newStatus === 'idle' || newStatus === 'empty') {
-        // Room became inactive - set timestamp if not already set
+      updates[`rooms/${roomId}/status`] = newStatus;
+      updates[`rooms/${roomId}/statusUpdatedAt`] = serverTimestamp();
+
+      // Handle inactiveSince timestamp
+      if (newStatus === ROOM_STATUS.IDLE || newStatus === ROOM_STATUS.EMPTY) {
         if (!roomData.inactiveSince) {
-          const inactiveSinceRef = ref(db, `rooms/${roomId}/inactiveSince`);
-          await set(inactiveSinceRef, Date.now());
+          updates[`rooms/${roomId}/inactiveSince`] = Date.now();
           console.log(`[updateRoomStatus] Room ${roomId} became ${newStatus}, setting inactiveSince`);
         }
-      } else if (newStatus === 'active') {
-        // Room became active - clear timestamp and update lastActiveAt
+      } else if (newStatus === ROOM_STATUS.ACTIVE) {
         if (roomData.inactiveSince !== null) {
-          const inactiveSinceRef = ref(db, `rooms/${roomId}/inactiveSince`);
-          await set(inactiveSinceRef, null);
+          updates[`rooms/${roomId}/inactiveSince`] = null;
         }
-        // Only update lastActiveAt if it changed status to active
-        const lastActiveAtRef = ref(db, `rooms/${roomId}/lastActiveAt`);
-        await set(lastActiveAtRef, Date.now());
+        updates[`rooms/${roomId}/lastActiveAt`] = Date.now();
         console.log(`[updateRoomStatus] Room ${roomId} became active, clearing inactiveSince`);
       }
     }
+
+    // Update stats if changed
+    if (statsChanged) {
+      updates[`rooms/${roomId}/stats`] = createRoomStats(
+        status.activePlayers,
+        status.awayPlayers,
+        status.offlinePlayers,
+        status.totalPlayers
+      );
+    }
+
+    // Execute batch update
+    await batchUpdate(updates);
 
   } catch (error) {
     console.error('Error updating room status:', error);
