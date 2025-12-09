@@ -1,7 +1,35 @@
 import { useEffect } from 'react';
-import { ref, onValue, set, serverTimestamp } from 'firebase/database';
+import { ref, onValue } from 'firebase/database';
 import { db } from '../config/firebase';
 import { ROOM_MONITOR_CONFIG } from '../config/roomMonitor';
+
+// Constants for room and member status
+const ROOM_STATUS = {
+  ACTIVE: 'active',
+  IDLE: 'idle',
+  EMPTY: 'empty',
+  CLOSED: 'closed',
+  OPEN: 'open'
+};
+
+const MEMBER_STATUS = {
+  ONLINE: 'online',
+  AWAY: 'away',
+  OFFLINE: 'offline'
+};
+
+// Helper to batch update multiple paths
+const batchUpdate = async (updates) => {
+  const promises = Object.entries(updates).map(([path, value]) => {
+    const reference = ref(db, path);
+    // Import set here to avoid circular dependency
+    const { set, serverTimestamp: st } = require('firebase/database');
+    // Replace serverTimestamp placeholder with actual call
+    const actualValue = value === 'SERVER_TIMESTAMP' ? st() : value;
+    return set(reference, actualValue);
+  });
+  return Promise.all(promises);
+};
 
 /**
  * Monitors player disconnections and automatically closes room if ALL players are offline
@@ -48,7 +76,7 @@ export function useDisconnectMonitor(roomId) {
             return;
           }
 
-          if (roomData.roomStatus === 'closed' || roomData.status === 'closed') {
+          if (roomData.roomStatus === ROOM_STATUS.CLOSED || roomData.status === ROOM_STATUS.CLOSED) {
             console.log(`[DisconnectMonitor] Room ${roomId} already closed, skipping`);
             return;
           }
@@ -62,9 +90,9 @@ export function useDisconnectMonitor(roomId) {
           const membersList = Object.entries(members);
 
           // Count member statuses
-          const onlineCount = membersList.filter(([, m]) => m.status === 'online').length;
-          const awayCount = membersList.filter(([, m]) => m.status === 'away').length;
-          const offlineCount = membersList.filter(([, m]) => m.status === 'offline').length;
+          const onlineCount = membersList.filter(([, m]) => m.status === MEMBER_STATUS.ONLINE).length;
+          const awayCount = membersList.filter(([, m]) => m.status === MEMBER_STATUS.AWAY).length;
+          const offlineCount = membersList.filter(([, m]) => m.status === MEMBER_STATUS.OFFLINE).length;
 
           console.log(`[DisconnectMonitor] 🔍 Room ${roomId} status check:`, {
             online: onlineCount,
@@ -92,22 +120,20 @@ export function useDisconnectMonitor(roomId) {
           if (onlineCount === 0 && awayCount === 0 && offlineCount > 0) {
             console.log(`[DisconnectMonitor] ❌ ALL ${offlineCount} members offline! Room ${roomId} will close in ${ROOM_MONITOR_CONFIG.EMPTY_AUTO_CLOSE_TIMEOUT / 1000}s`);
 
-            // Set room to empty status
-            const statusRef = ref(db, `rooms/${roomId}/status`);
-            const inactiveSinceRef = ref(db, `rooms/${roomId}/inactiveSince`);
+            // Batch update room to empty status
+            const updates = {
+              [`rooms/${roomId}/status`]: ROOM_STATUS.EMPTY,
+              [`rooms/${roomId}/inactiveSince`]: Date.now(),
+              [`rooms/${roomId}/stats`]: {
+                activePlayers: 0,
+                awayPlayers: 0,
+                offlinePlayers: offlineCount,
+                totalPlayers: membersList.length,
+                lastChecked: 'SERVER_TIMESTAMP'
+              }
+            };
 
-            await set(statusRef, 'empty');
-            await set(inactiveSinceRef, Date.now());
-
-            // Update stats
-            const statsRef = ref(db, `rooms/${roomId}/stats`);
-            await set(statsRef, {
-              activePlayers: 0,
-              awayPlayers: 0,
-              offlinePlayers: offlineCount,
-              totalPlayers: membersList.length,
-              lastChecked: serverTimestamp()
-            });
+            await batchUpdate(updates);
 
             // Close the room after configured timeout (3 seconds)
             setTimeout(async () => {
@@ -123,8 +149,8 @@ export function useDisconnectMonitor(roomId) {
 
                 const finalMembers = finalRoomData.members || {};
                 const finalMembersList = Object.entries(finalMembers);
-                const finalOnlineCount = finalMembersList.filter(([, m]) => m.status === 'online').length;
-                const finalAwayCount = finalMembersList.filter(([, m]) => m.status === 'away').length;
+                const finalOnlineCount = finalMembersList.filter(([, m]) => m.status === MEMBER_STATUS.ONLINE).length;
+                const finalAwayCount = finalMembersList.filter(([, m]) => m.status === MEMBER_STATUS.AWAY).length;
 
                 if (finalOnlineCount > 0 || finalAwayCount > 0) {
                   console.log(`[DisconnectMonitor] 🛑 ABORT CLOSURE: Room ${roomId} has ${finalOnlineCount} online + ${finalAwayCount} away players. NOT closing!`);
@@ -133,14 +159,15 @@ export function useDisconnectMonitor(roomId) {
 
                 console.log(`[DisconnectMonitor] ✅ Confirmed: ALL players still offline. Closing room ${roomId}`);
 
-                const roomStatusRef = ref(db, `rooms/${roomId}/roomStatus`);
-                const closedAtRef = ref(db, `rooms/${roomId}/closedAt`);
-                const closeReasonRef = ref(db, `rooms/${roomId}/closeReason`);
+                // Batch close the room
+                const closeUpdates = {
+                  [`rooms/${roomId}/status`]: ROOM_STATUS.CLOSED,
+                  [`rooms/${roomId}/roomStatus`]: ROOM_STATUS.CLOSED,
+                  [`rooms/${roomId}/closedAt`]: 'SERVER_TIMESTAMP',
+                  [`rooms/${roomId}/closeReason`]: 'Auto-closed: All players disconnected'
+                };
 
-                await set(statusRef, 'closed');
-                await set(roomStatusRef, 'closed');
-                await set(closedAtRef, serverTimestamp());
-                await set(closeReasonRef, 'Auto-closed: All players disconnected');
+                await batchUpdate(closeUpdates);
 
                 console.log(`[DisconnectMonitor] Room ${roomId} closed successfully`);
               }, { onlyOnce: true });

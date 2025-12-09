@@ -3,6 +3,18 @@ import { ref, onValue } from 'firebase/database';
 import { db } from '../config/firebase';
 import { transferHost } from '../services/room';
 
+// Constants for member status and roles
+const MEMBER_STATUS = {
+  ONLINE: 'online',
+  AWAY: 'away',
+  OFFLINE: 'offline'
+};
+
+const MEMBER_ROLE = {
+  HOST: 'host',
+  PLAYER: 'player'
+};
+
 /**
  * Hook to monitor host status and automatically transfer host when the host leaves
  *
@@ -35,7 +47,7 @@ export function useHostTransfer(roomId, currentUserId) {
       const membersList = Object.entries(members);
 
       // Find current host
-      const hostEntry = membersList.find(([, memberData]) => memberData.role === 'host');
+      const hostEntry = membersList.find(([, memberData]) => memberData.role === MEMBER_ROLE.HOST);
 
       if (!hostEntry) {
         console.log('👑 [useHostTransfer] No host found in room');
@@ -57,20 +69,20 @@ export function useHostTransfer(roomId, currentUserId) {
       // Detect host leaving (status changed to offline) OR going away
       const shouldTransfer =
         hostId === previousHostRef.current &&
-        (hostData.status === 'offline' || hostData.status === 'away');
+        (hostData.status === MEMBER_STATUS.OFFLINE || hostData.status === MEMBER_STATUS.AWAY);
 
       if (shouldTransfer) {
         // Check if there are online players available (only transfer if someone is actively online)
         const onlinePlayers = membersList.filter(([userId, memberData]) => {
-          return userId !== hostId && memberData.status === 'online';
+          return userId !== hostId && memberData.status === MEMBER_STATUS.ONLINE;
         });
 
         // Only transfer if:
         // 1. Host went offline (always transfer), OR
         // 2. Host went away AND there are online players available
         const shouldProceedWithTransfer =
-          hostData.status === 'offline' ||
-          (hostData.status === 'away' && onlinePlayers.length > 0);
+          hostData.status === MEMBER_STATUS.OFFLINE ||
+          (hostData.status === MEMBER_STATUS.AWAY && onlinePlayers.length > 0);
 
         if (!shouldProceedWithTransfer) {
           console.log('👑 [useHostTransfer] Host is away but no online players available, keeping current host');

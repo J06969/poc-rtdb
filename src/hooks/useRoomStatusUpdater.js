@@ -3,6 +3,12 @@ import { ref, onValue } from 'firebase/database';
 import { db } from '../config/firebase';
 import { updateRoomStatus } from '../services/room';
 
+// Constants for member status
+const MEMBER_STATUS = {
+  ONLINE: 'online',
+  OFFLINE: 'offline'
+};
+
 /**
  * Hook that automatically updates room status when ANY player status changes
  * This ensures room status is updated even when host is offline
@@ -52,8 +58,8 @@ export function useRoomStatusUpdater(roomId) {
       console.log(`[RoomStatusUpdater] #${updateNum} Current members:`, memberStatuses);
 
       // Check if this is a critical change (player going offline/online)
-      const hasOfflinePlayers = memberStatuses.some(m => m.status === 'offline');
-      const allPlayersOffline = memberStatuses.every(m => m.status === 'offline');
+      const hasOfflinePlayers = memberStatuses.some(m => m.status === MEMBER_STATUS.OFFLINE);
+      const allPlayersOffline = memberStatuses.every(m => m.status === MEMBER_STATUS.OFFLINE);
       const isCriticalChange = hasOfflinePlayers || allPlayersOffline;
 
       // Clear previous timeout

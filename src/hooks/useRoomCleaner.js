@@ -2,6 +2,11 @@ import { useEffect, useRef } from 'react';
 import { ref, onValue, remove, set } from 'firebase/database';
 import { db } from '../config/firebase';
 
+// Constants for room status
+const ROOM_STATUS = {
+  CLOSED: 'closed'
+};
+
 /**
  * Monitors all rooms and automatically deletes closed rooms after their deleteAt time
  * This ensures RTDB doesn't fill up with old room data
@@ -70,7 +75,8 @@ export function useRoomCleaner() {
       const rooms = snapshot.val();
       const now = Date.now();
 
-      Object.entries(rooms).forEach(async ([roomId, roomData]) => {
+      // Fix async forEach anti-pattern - use Promise.all
+      const deletionPromises = Object.entries(rooms).map(async ([roomId, roomData]) => {
         // Skip if room doesn't have deleteAt timestamp
         if (!roomData.deleteAt) return;
 
@@ -105,6 +111,11 @@ export function useRoomCleaner() {
           }, timeUntilDeletion);
         }
       });
+
+      // Wait for all deletion operations
+      Promise.all(deletionPromises).catch(err => {
+        console.error('[RoomCleaner] Error in deletion batch:', err);
+      });
     });
 
     // Also run a periodic cleanup every 30 seconds to catch any missed deletions
@@ -121,9 +132,10 @@ export function useRoomCleaner() {
         const rooms = snapshot.val();
         const now = Date.now();
 
-        Object.entries(rooms).forEach(async ([roomId, roomData]) => {
+        // Fix async forEach anti-pattern - use Promise.all
+        const cleanupPromises = Object.entries(rooms).map(async ([roomId, roomData]) => {
           // Delete if: room is closed AND (has deleteAt in past OR has been closed for >1 minute without deleteAt)
-          const isClosed = roomData.status === 'closed' || roomData.roomStatus === 'closed';
+          const isClosed = roomData.status === ROOM_STATUS.CLOSED || roomData.roomStatus === ROOM_STATUS.CLOSED;
           const hasOldDeleteTime = roomData.deleteAt && roomData.deleteAt < now;
           const closedLongAgo = roomData.closedAt && (now - roomData.closedAt > 60000); // 1 minute
 
@@ -138,6 +150,11 @@ export function useRoomCleaner() {
               console.error(`[RoomCleaner] ❌ Error deleting stale room ${roomId}:`, error);
             }
           }
+        });
+
+        // Wait for all cleanup operations
+        Promise.all(cleanupPromises).catch(err => {
+          console.error('[RoomCleaner] Error in periodic cleanup batch:', err);
         });
       }, { onlyOnce: true });
     }, 30000); // Every 30 seconds

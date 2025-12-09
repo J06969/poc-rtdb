@@ -1,8 +1,19 @@
 import { useEffect, useState } from 'react';
-import { ref, onValue, onDisconnect, set, serverTimestamp } from 'firebase/database';
+import { ref, onValue, onDisconnect, set, serverTimestamp, get } from 'firebase/database';
 import { db } from '../config/firebase';
 import { PRESENCE_CONFIG } from '../config/presence';
 import { ROOM_MONITOR_CONFIG } from '../config/roomMonitor';
+
+// Constants for member status
+const MEMBER_STATUS = {
+  ONLINE: 'online',
+  AWAY: 'away',
+  OFFLINE: 'offline'
+};
+
+const ROOM_STATUS = {
+  CLOSED: 'closed'
+};
 
 /**
  * Custom hook to manage user presence in a room
@@ -35,14 +46,14 @@ export function usePresence(roomId, userId) {
     const handleVisibilityChange = () => {
       if (document.hidden) {
         // Tab is hidden - mark as away
-        set(userStatusRef, 'away');
+        set(userStatusRef, MEMBER_STATUS.AWAY);
         set(userLastChangedRef, serverTimestamp());
       } else {
         // Tab is visible - mark as online (if connected)
         const connectedCheck = ref(db, '.info/connected');
         onValue(connectedCheck, (snapshot) => {
           if (snapshot.val()) {
-            set(userStatusRef, 'online');
+            set(userStatusRef, MEMBER_STATUS.ONLINE);
             set(userLastChangedRef, serverTimestamp());
           }
         }, { onlyOnce: true });
@@ -58,20 +69,19 @@ export function usePresence(roomId, userId) {
 
       if (connected) {
         // Check if tab is visible
-        const initialStatus = document.hidden ? 'away' : 'online';
+        const initialStatus = document.hidden ? MEMBER_STATUS.AWAY : MEMBER_STATUS.ONLINE;
 
-        // Increment online member count when joining
+        // Increment online member count when joining (using get for atomic read)
         const onlineCountRef = ref(db, `rooms/${roomId}/onlineMemberCount`);
         const roomRef = ref(db, `rooms/${roomId}`);
 
-        // Get current count and increment
-        onValue(roomRef, async (snap) => {
-          const room = snap.val();
-          const currentCount = (room?.onlineMemberCount || 0) + 1;
-          await set(onlineCountRef, currentCount);
+        // Get current count atomically and increment
+        const roomSnapshot = await get(roomRef);
+        const room = roomSnapshot.val();
+        const currentCount = (room?.onlineMemberCount || 0) + 1;
+        await set(onlineCountRef, currentCount);
 
-          console.log(`[usePresence] User ${userId} joined. Online count: ${currentCount}`);
-        }, { onlyOnce: true });
+        console.log(`[usePresence] User ${userId} joined. Online count: ${currentCount}`);
 
         // When connected, set status based on tab visibility
         set(userStatusRef, initialStatus);
@@ -79,7 +89,7 @@ export function usePresence(roomId, userId) {
 
         // When this client disconnects, automatically set status to 'offline'
         // This is the magic of Firebase RTDB's onDisconnect()
-        onDisconnect(userStatusRef).set('offline');
+        onDisconnect(userStatusRef).set(MEMBER_STATUS.OFFLINE);
         onDisconnect(userLastChangedRef).set(serverTimestamp());
 
         // CRITICAL: Decrement online count when disconnecting
@@ -119,8 +129,8 @@ export function usePresence(roomId, userId) {
             // You're alone - set up auto-close on disconnect
             console.log(`[usePresence] ${userId} is ALONE. Setting up auto-close on disconnect`);
 
-            onDisconnect(statusRef).set('closed');
-            onDisconnect(roomStatusRef).set('closed');
+            onDisconnect(statusRef).set(ROOM_STATUS.CLOSED);
+            onDisconnect(roomStatusRef).set(ROOM_STATUS.CLOSED);
             onDisconnect(closedAtRef).set(serverTimestamp());
             onDisconnect(closeReasonRef).set('Auto-closed: Last member disconnected');
 
@@ -179,7 +189,7 @@ export function usePresence(roomId, userId) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       // Clean up: set status to offline when component unmounts
       if (userId && roomId) {
-        set(userStatusRef, 'offline');
+        set(userStatusRef, MEMBER_STATUS.OFFLINE);
         set(userLastChangedRef, serverTimestamp());
       }
     };
